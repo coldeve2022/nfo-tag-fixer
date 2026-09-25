@@ -1,0 +1,28 @@
+# 统一换行：仓库里存 LF，检出时按平台转换。
+# Windows 的 .bat/.cmd 必须是 CRLF，否则某些解析器会出问题。
+* text=auto eol=lf
+
+*.py    text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.toml  text eol=lf
+*.txt   text eol=lf
+
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# 二进制
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.exe   binary
+*.dll   binary
+*.zip   binary
+
+# 让 git 在 diff 里把生成的版本资源当二进制
+build/version_info.txt -diff

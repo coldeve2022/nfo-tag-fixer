@@ -1,0 +1,12 @@
+# 运行依赖
+#
+# 三件事必须都在：
+#   PySide6    —— 图形界面
+#   requests   —— 标签整理（Ollama / DashScope）与 Jellyfin 同步
+#   send2trash —— 「移除冗余 NFO」走系统回收站（缺失时降级为本地 .nfo_trash 目录）
+#
+# 历史坑：早期 requirements 只写了 PySide6，于是在干净的机器上装完，
+# 打开「标签整理」或「设置 → 测试连接」会直接 ImportError。
+PySide6>=6.6,<7
+requests>=2.31
+Send2Trash>=1.8

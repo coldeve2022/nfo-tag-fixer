@@ -1,0 +1,218 @@
+name: tests
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+# 同一分支连续推送时取消旧的运行，省额度
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ------------------------------------------------------------
+  # 1) 静态检查：只开能真的拦住 bug 的规则族
+  # ------------------------------------------------------------
+  lint:
+    name: 静态检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "ruff>=0.6"
+      # 规则集在 pyproject.toml 里定义（含收窄原因），这里直接跑
+      - run: ruff check . --output-format=github
+
+  # ------------------------------------------------------------
+  # 2) 隐私守卫：个人数据/运行态产物绝不能进仓库
+  # ------------------------------------------------------------
+  privacy:
+    name: 隐私守卫
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 运行态数据文件不得存在
+        run: |
+          set -e
+          fail=0
+          for f in settings.json rules.json archive.db config.json; do
+            if [ -e "$f" ]; then
+              echo "::error::仓库根不该存在运行态数据文件: $f"
+              fail=1
+            fi
+          done
+          for d in logs dist build; do
+            if [ -e "$d" ]; then
+              echo "::error::仓库根不该存在目录: $d"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: 索引里不得有个人数据（最后一道闸）
+        run: |
+          set -e
+          if git ls-files | grep -E '^(settings\.json|rules\.json|archive\.db|logs/|dist/|build/|data/|portable\.txt)$|^logs/|^dist/|^build/'; then
+            echo "::error::以下文件被提交了，应从索引移除"
+            exit 1
+          fi
+          echo "索引干净 ✓"
+
+      # 用 Python 跑，不用 shell 正则 —— 见下面这条注释
+      - name: 源码隐私扫描（Python 实现，不依赖 shell 转义）
+        run: python -m pytest tests/test_privacy.py -q
+
+      # 反斜杠层数是个经典陷阱：YAML 块标量与 bash 单引号都不做转义，
+      # 所以 `grep -E 'C:\\Users\\'` 里的反斜杠层数**极易写错**，
+      # 写错就变成永远不命中的空转守卫 —— 而且看起来一切正常。
+      # 某些 shell（如 Windows 上的 Git Bash/MSYS）还会在传参时改写反斜杠，
+      # 让本地自测结果和 CI 结果不一致。
+      # 结论：这类扫描只用 Python 表达式写，并在同一步自证非空转。
+      # 探针写到仓库外的临时目录，避免它自己被扫描到、也避免遗留污染工作区。
+      - name: 守卫自检（证明扫描不是空转）
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys, tempfile
+          sys.path.insert(0, ".")
+          from tests.test_privacy import _FORBIDDEN, _read, _source_files
+
+          probe_dir = pathlib.Path(tempfile.mkdtemp(prefix="ntf-guard-"))
+          probe = probe_dir / "_guard_probe.py"
+          probe.write_text('x = "C:' + chr(92) + 'Users' + chr(92) + 'realsecretuser"\n',
+                           encoding="utf-8")
+          try:
+              pattern = dict(_FORBIDDEN)["Windows 用户路径"]
+              if not re.search(pattern, _read(probe)):
+                  print("::error::隐私守卫是空转的：注入的样本没有被匹配")
+                  sys.exit(1)
+              print("注入样本被正确识别 ✓")
+          finally:
+              probe.unlink(missing_ok=True)
+              probe_dir.rmdir()
+
+          n = len(_source_files())
+          print(f"扫描范围：{n} 个文件")
+          if n < 20:
+              print("::error::扫描范围异常，疑似路径失效")
+              sys.exit(1)
+          PY
+
+      - name: 守卫自检后工作区仍然干净
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::守卫自检留下了文件"; git status --porcelain; exit 1
+          fi
+          echo "干净 ✓"
+
+  # ------------------------------------------------------------
+  # 3) 测试矩阵（三平台 × 三个 Python 版本）
+  # ------------------------------------------------------------
+  test:
+    name: 测试 ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.10", "3.12", "3.13"]
+        exclude:
+          # 控制矩阵规模：非 Linux 平台只跑两个版本
+          - os: macos-latest
+            python: "3.10"
+          - os: windows-latest
+            python: "3.10"
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONIOENCODING: utf-8
+      # 让测试的数据根目录落在临时目录，避免污染工作区
+      PYTEST_DATA_HOME: ${{ runner.temp }}/ntf-pytest-home
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      # 装真 ffmpeg：否则和外部工具相关的用例只能在打桩下跑
+      - name: 安装 ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+      - name: 安装 ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg || true
+      - name: 安装 ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress || true
+
+      # 离屏渲染需要库（Qt 在无头 Linux 上仍需要几个系统库）
+      - name: 安装离屏依赖 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y -qq libegl1 libgl1 libxkbcommon-x11-0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+            fonts-noto-cjk || true
+
+      - name: 运行测试
+        run: python -m pytest -q
+
+      - name: 测试不得污染工作区
+        shell: bash
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::测试在工作区留下了文件："
+            git status --porcelain
+            exit 1
+          fi
+          echo "工作区干净 ✓"
+
+  # ------------------------------------------------------------
+  # 4) 冻结产物冒烟（只跑一个平台，验证"换台机器能不能用"）
+  # ------------------------------------------------------------
+  frozen-smoke:
+    name: 打包产物冒烟
+    runs-on: windows-latest
+    needs: [lint]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - name: 生成图标
+        run: python tools/make_icon.py
+      - name: 构建（跳过测试，测试已由矩阵覆盖）
+        run: python scripts/build_release.py --skip-tests
+      - name: 校验解压后能自检
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem dist/*.zip | Select-Object -First 1
+          Expand-Archive $zip.FullName -DestinationPath dist/unpacked
+          $exe = Get-ChildItem dist/unpacked -Recurse -Filter *.exe | Select-Object -First 1
+          Write-Host "exe: $($exe.FullName)"
+          $env:NFO_TAG_FIXER_HOME = Join-Path $env:RUNNER_TEMP "ntf-smoke"
+          $out = & $exe.FullName --doctor 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) { throw "exe --doctor 失败" }
+      - name: 上传产物（仅工作流存档，正式发布由 release.yml 做）
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-smoke
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          retention-days: 7

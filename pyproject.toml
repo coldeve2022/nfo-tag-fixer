@@ -1,0 +1,91 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nfo-tag-fixer"
+# version 与 version.py 的 __version__ 必须一致：release.yml 会做校验并直接 fail
+version = "1.3.0"
+description = "批量修正本地媒体库 NFO 的 tag/genre 标签，并提供标签清理、NFO 修复与 Jellyfin 同步"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "coldeve2022" }]
+keywords = ["nfo", "tag", "jellyfin", "media-library", "metadata", "pyside6"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: Chinese (Simplified)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "PySide6>=6.6,<7",
+    "requests>=2.31",
+    "Send2Trash>=1.8",
+]
+
+[project.urls]
+Homepage = "https://github.com/coldeve2022/nfo-tag-fixer"
+Repository = "https://github.com/coldeve2022/nfo-tag-fixer"
+Issues = "https://github.com/coldeve2022/nfo-tag-fixer/issues"
+Changelog = "https://github.com/coldeve2022/nfo-tag-fixer/blob/main/CHANGELOG.md"
+
+[project.scripts]
+nfo-tag-fixer = "main:main"
+
+[tool.setuptools]
+py-modules = ["main", "config", "version"]
+packages = ["core", "ui", "ui.pages"]
+
+# ============================================================
+# pytest
+# ============================================================
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "-p", "no:cacheprovider",
+]
+filterwarnings = [
+    # ElementTree 的 Element.__bool__ 已全部改成 `is None`，真出警告要能看见
+    "default::DeprecationWarning",
+]
+markers = [
+    "gui: 需要 QApplication（离屏）",
+]
+
+# ============================================================
+# ruff
+# ============================================================
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [".git", "__pycache__", "build", "dist", ".pytest_home", "_patch"]
+
+[tool.ruff.lint]
+# 全开会报出几百条纯风格项（PTH / UP045 / E501…），lint job 从第一次运行就是红的，
+# 等于没有静态检查。只留**能真的拦住 bug** 的规则族：
+#   E4  导入位置/重复导入        E7  语句级问题（lambda 赋值等）
+#   E9  语法错误                  F  未定义名字(F821)、重复定义(F811)、未用变量(F841)…
+select = ["E4", "E7", "E9", "F"]
+ignore = [
+    "E501",   # 行长度由 formatter 负责，不参与 lint
+    "E702",   # 允许一行多个分号（历史代码里的紧凑写法）
+    "E741",   # 允许变量名 l（循环下标）
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试里为了构造场景经常需要"故意留着的导入"
+"tests/*" = ["F401", "F841"]

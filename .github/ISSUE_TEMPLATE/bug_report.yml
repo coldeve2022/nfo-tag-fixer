@@ -1,0 +1,107 @@
+name: 缺陷报告
+description: 软件行为不符合预期 / 报错 / 崩溃
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。为了不用来回追问，请把下面几项填全 —— 尤其是**环境自检输出**，
+        它一次性包含了版本、平台、数据目录与依赖状态，能省掉大量来回。
+
+        如果涉及隐私或安全问题，**请不要在这里提交**，见 [SECURITY.md](../blob/main/SECURITY.md)。
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已经用最新版本复现过（不是旧版遗留问题）
+          required: true
+        - label: 我已经搜索过现有 Issue，没有重复
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: "「帮助 → 关于」里的版本号，或命令行 `--version` 的输出"
+      placeholder: "1.3.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: 环境自检输出
+      description: |
+        运行 `NFO标签批量修改工具.exe --doctor`（源码运行则 `python main.py --doctor`），
+        或点「设置与工具 → 环境自检 → 复制全部」，把输出粘贴到这里。
+      render: text
+      placeholder: |
+        NFO 标签批量修改工具 v1.3.0
+        Python  : 3.12.x (...)
+        平台    : win32
+        打包版  : 是
+        数据目录: D:\Tools\nfo-tag-fixer  [程序目录（可写）]  可写=True
+        ------------------------------------------------------------
+        ffprobe         ⚪ 未找到（可选：仅「破解找回」的弱线索需要）
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      description: 越具体越好：点了哪个页面、哪个按钮、之前做了什么操作
+      placeholder: |
+        1. 在「标签修正」页导入 D:\Media\Library
+        2. 点「① 标签统计」→「一键智能建议」→ 确定
+        3. 点「② 预览变更」
+        4. 出现……
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      description: 有报错就把完整文案贴上来
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: |
+        日志在数据目录的 `logs/YYYY-MM-DD.log`；未捕获异常还会写进 `logs/crash.log`。
+        **粘贴前请把其中的个人路径替换成 `D:\Media\...` 之类的占位**。
+      render: text
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 涉及的页面
+      multiple: true
+      options:
+        - 标签修正
+        - 破解找回
+        - 破解档案
+        - 标签整理
+        - NFO 修复
+        - 设置与工具
+        - 启动 / 打包 / 安装
+        - 其它
+    validations:
+      required: true

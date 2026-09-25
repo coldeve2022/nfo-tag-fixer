@@ -1,0 +1,33 @@
+{
+  "_comment": "这是配置模板，不是运行时配置。程序首次运行会在数据目录自动生成 settings.json；想把这份改成默认值，把文件复制为 settings.json 并删掉本行注释即可。",
+  "backup_enabled": true,
+  "target_encoding": "utf-8",
+  "recursive_scan": true,
+  "ffprobe_path": "",
+  "enable_ffprobe": false,
+  "archive_db_path": "",
+  "log_dir": "",
+  "theme": "dark",
+  "last_rules_path": "",
+  "exclude_folders": [
+    "#recycle",
+    "@eadir"
+  ],
+  "censored_tags": [
+    "CENSORED",
+    "有码"
+  ],
+  "uncensored_tags": [
+    "FC2",
+    "破解",
+    "无码",
+    "无码流出",
+    "无码破解",
+    "無修正",
+    "流出"
+  ],
+  "target_tag": "无码破解",
+  "jellyfin_server": "",
+  "jellyfin_api_key": "",
+  "sync_jellyfin": false
+}

@@ -1,0 +1,47 @@
+name: 功能建议
+description: 希望新增或改动某个功能
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先说明**你遇到的实际问题**，再说你希望的解法。
+        "我希望有个 XX 按钮"这类描述信息量不大；
+        "我有 3000 个 NFO，每次都要手动 XX，要半小时"这种能让我判断该怎么设计。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到的实际问题
+      description: 现在是怎么做的？麻烦在哪？大概多花多少时间？
+      placeholder: |
+        我库里大约 3000 个 NFO，每次替换完都要……
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你期望的做法
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 你试过的替代方案
+      description: 有没有用手工/脚本/别的软件绕过？为什么不够用？
+    validations:
+      required: false
+
+  - type: dropdown
+    id: scope
+    attributes:
+      label: 大致影响范围
+      options:
+        - 只影响我一个人的小众场景
+        - 常见场景，应该对多数用户有用
+        - 不确定
+    validations:
+      required: true

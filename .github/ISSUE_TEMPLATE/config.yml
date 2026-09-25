@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全问题 / 隐私问题
+    url: https://github.com/coldeve2022/nfo-tag-fixer/security/advisories/new
+    about: 请勿开公开 Issue，用私密渠道报告（见 SECURITY.md）
+  - name: 使用问题先看这里
+    url: https://github.com/coldeve2022/nfo-tag-fixer/blob/main/README.md#常见问题
+    about: 常见问题（待确认状态、AI 是否上传数据、换电脑报路径错误…）多半已有答案

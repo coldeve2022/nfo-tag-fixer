@@ -1,0 +1,165 @@
+name: release
+
+# 只有打 v* 标签才发版。顺序很重要：先把代码推上 main 等 CI 绿，再打标签，
+# 否则等于给一份还没验证过的代码发版。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布/重跑的标签（如 v1.3.0）"
+        required: true
+
+permissions:
+  contents: write        # 创建 Release、上传附件
+
+jobs:
+  # ------------------------------------------------------------
+  # 1) 版本一致性：version.py / pyproject.toml / 标签 / CHANGELOG
+  # ------------------------------------------------------------
+  verify:
+    name: 校验版本号
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # 逻辑放在脚本里：写在 run: | 里嵌多行 python -c 会因缩进让 YAML 块提前结束，
+      # 报出的错还很误导。抽成脚本后本地也能跑同一条命令。
+      - name: 三处版本号 + CHANGELOG 必须一致
+        id: check
+        run: |
+          REF="${{ github.event.inputs.tag }}"
+          if [ -z "$REF" ]; then REF="${GITHUB_REF_NAME}"; fi
+          python scripts/check_version.py "$REF"
+
+  # ------------------------------------------------------------
+  # 2) 构建 Windows 发行包
+  # ------------------------------------------------------------
+  build:
+    name: 构建发行包
+    needs: [verify]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: 运行测试
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYTHONIOENCODING: utf-8
+          PYTEST_DATA_HOME: ${{ runner.temp }}/ntf-release-tests
+        run: python -m pytest -q
+
+      - name: 打包（图标 + 版本资源 + PyInstaller + zip + SHA256）
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python scripts/build_release.py --skip-tests
+
+      - name: 解压后冒烟（模拟用户拿到包）
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem dist/*.zip | Select-Object -First 1
+          Expand-Archive $zip.FullName -DestinationPath dist/unpacked
+          $exe = Get-ChildItem dist/unpacked -Recurse -Filter *.exe | Select-Object -First 1
+          $env:NFO_TAG_FIXER_HOME = Join-Path $env:RUNNER_TEMP "ntf-release-smoke"
+          $out = & $exe.FullName --doctor 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0) { throw "exe --doctor 失败" }
+          if ($out -notmatch "--") { throw "doctor 输出异常" }
+          # 确认 zip 内不含个人数据
+          $bad = Get-ChildItem dist/unpacked -Recurse | Where-Object {
+            $_.Name -in @('settings.json','rules.json','archive.db')
+          }
+          if ($bad) { throw "产物里混入了运行态数据：$bad" }
+          Write-Host "冒烟通过 ✓"
+
+      - name: 校验 SHA256 与实际一致
+        shell: pwsh
+        run: |
+          $line = Get-Content (Get-ChildItem dist/*.sha256 | Select-Object -First 1).FullName
+          $expect = ($line -split '\s+')[0]
+          $zip = Get-ChildItem dist/*.zip | Select-Object -First 1
+          $actual = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLower()
+          if ($expect -ne $actual) { throw "SHA256 不匹配：$expect vs $actual" }
+          Write-Host "SHA256 一致 ✓"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  # ------------------------------------------------------------
+  # 3) 创建 Release
+  # ------------------------------------------------------------
+  publish:
+    name: 创建 Release
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: assets-out
+
+      - name: 生成发布说明（抽取 CHANGELOG 对应段落）
+        run: |
+          python - <<'PY'
+          import os, pathlib, re
+          ver = os.environ["VERSION"]
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          m = re.search(rf"## \[{re.escape(ver)}\][^\n]*\n(.*?)(?=\n## \[|\Z)", text, re.S)
+          body = m.group(1).strip() if m else "详见 CHANGELOG.md"
+          header = (
+              "## 下载\n\n"
+              "- `nfo-tag-fixer-v%s-win64.zip` —— 解压即用，无需安装 Python\n"
+              "- `nfo-tag-fixer-v%s-win64.zip.sha256` —— 校验文件完整性\n\n"
+              "```\n# Windows (PowerShell) 校验\n"
+              "Get-FileHash .\\nfo-tag-fixer-v%s-win64.zip -Algorithm SHA256\n"
+              "```\n\n"
+              "## 系统要求\n\n"
+              "- Windows 10/11 x64\n"
+              "- 可选：FFmpeg（ffprobe，用于「破解找回」的弱线索）\n"
+              "- 可选：Ollama + `qwen3:8b`（本地 AI 标签整理）\n\n"
+              "## 本版变更\n\n"
+          ) % (ver, ver, ver)
+          pathlib.Path("release-body.md").write_text(header + body + "\n", encoding="utf-8")
+          print(pathlib.Path("release-body.md").read_text(encoding="utf-8")[:800])
+          PY
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+
+      - name: 创建 Release 并上传附件
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: v${{ needs.verify.outputs.version }}
+          body_path: release-body.md
+          draft: false
+          prerelease: false
+          files: |
+            assets-out/*.zip
+            assets-out/*.sha256
+          fail_on_unmatched_files: true
