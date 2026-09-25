@@ -133,8 +133,6 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen
       PYTHONIOENCODING: utf-8
-      # 让测试的数据根目录落在临时目录，避免污染工作区
-      PYTEST_DATA_HOME: ${{ runner.temp }}/ntf-pytest-home
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -168,6 +166,11 @@ jobs:
             fonts-noto-cjk || true
 
       - name: 运行测试
+        # `runner` 上下文在 **job 级 env** 里不可用（会报 Unrecognized named-value），
+        # 只能写在 step 级 env。放在这里是为了让测试的数据根目录落在临时目录，
+        # 不污染工作区（下面那步会断言 git status 干净）。
+        env:
+          PYTEST_DATA_HOME: ${{ runner.temp }}/ntf-pytest-home
         run: python -m pytest -q
 
       - name: 测试不得污染工作区
