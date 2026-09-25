@@ -55,7 +55,13 @@ def _rel(path: pathlib.Path) -> str:
 
 
 def lint(path: pathlib.Path) -> list[str]:
-    import yaml
+    # PyYAML 是开发依赖（requirements-dev.txt）。缺了就给明确提示，
+    # 而不是抛一个看不出所以然的 ModuleNotFoundError。
+    try:
+        import yaml
+    except ImportError:
+        raise SystemExit(
+            "workflow 体检需要 PyYAML：pip install -r requirements-dev.txt") from None
 
     text = path.read_text(encoding="utf-8")
     rel = _rel(path)

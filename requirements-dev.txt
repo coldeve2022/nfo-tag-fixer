@@ -4,3 +4,5 @@
 pytest>=8.0
 ruff>=0.6
 pyinstaller>=6.6
+# workflow 体检（tools/dev/lint_workflows.py）与 tests/test_workflows.py 需要
+pyyaml>=6.0
