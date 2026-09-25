@@ -24,9 +24,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install "ruff>=0.6"
+      - run: pip install "ruff>=0.6" "pyyaml>=6"
       # 规则集在 pyproject.toml 里定义（含收窄原因），这里直接跑
       - run: ruff check . --output-format=github
+      # workflow 体检：抓住 PyYAML 放过、但 GitHub 会拒绝的写法。
+      # 否则失败表现是"run 直接失败、0 个 job、连一行日志都没有"，很难自查。
+      - run: python tools/dev/lint_workflows.py
 
   # ------------------------------------------------------------
   # 2) 隐私守卫：个人数据/运行态产物绝不能进仓库
@@ -61,46 +64,35 @@ jobs:
       - name: 索引里不得有个人数据（最后一道闸）
         run: |
           set -e
-          if git ls-files | grep -E '^(settings\.json|rules\.json|archive\.db|logs/|dist/|build/|data/|portable\.txt)$|^logs/|^dist/|^build/'; then
+          if git ls-files | grep -E '^(settings\.json|rules\.json|archive\.db|portable\.txt)$|^(logs|dist|build|data)/'; then
             echo "::error::以下文件被提交了，应从索引移除"
             exit 1
           fi
           echo "索引干净 ✓"
 
-      # 用 Python 跑，不用 shell 正则 —— 见下面这条注释
-      - name: 源码隐私扫描（Python 实现，不依赖 shell 转义）
-        run: python -m pytest tests/test_privacy.py -q
+      # 用 Python 脚本，不用 shell 正则：见下面那段注释。
+      # 该脚本零第三方依赖，所以这个 job 不需要装 pytest 等开发依赖。
+      - name: 源码隐私扫描（含守卫自检）
+        run: python tools/privacy_scan.py --strict-artifacts
 
       # 反斜杠层数是个经典陷阱：YAML 块标量与 bash 单引号都不做转义，
       # 所以 `grep -E 'C:\\Users\\'` 里的反斜杠层数**极易写错**，
       # 写错就变成永远不命中的空转守卫 —— 而且看起来一切正常。
       # 某些 shell（如 Windows 上的 Git Bash/MSYS）还会在传参时改写反斜杠，
       # 让本地自测结果和 CI 结果不一致。
-      # 结论：这类扫描只用 Python 表达式写，并在同一步自证非空转。
-      # 探针写到仓库外的临时目录，避免它自己被扫描到、也避免遗留污染工作区。
-      - name: 守卫自检（证明扫描不是空转）
+      # 结论：这类扫描只用 Python 表达式写，并在同一步自证非空转
+      # （--self-test-only 就是干这个的，上面那步已包含）。
+      - name: 守卫自检（独立复跑一次）
+        run: python tools/privacy_scan.py --self-test-only
+
+      - name: 扫描范围合理性
         run: |
           python - <<'PY'
-          import pathlib, re, sys, tempfile
+          import sys
           sys.path.insert(0, ".")
-          from tests.test_privacy import _FORBIDDEN, _read, _source_files
-
-          probe_dir = pathlib.Path(tempfile.mkdtemp(prefix="ntf-guard-"))
-          probe = probe_dir / "_guard_probe.py"
-          probe.write_text('x = "C:' + chr(92) + 'Users' + chr(92) + 'realsecretuser"\n',
-                           encoding="utf-8")
-          try:
-              pattern = dict(_FORBIDDEN)["Windows 用户路径"]
-              if not re.search(pattern, _read(probe)):
-                  print("::error::隐私守卫是空转的：注入的样本没有被匹配")
-                  sys.exit(1)
-              print("注入样本被正确识别 ✓")
-          finally:
-              probe.unlink(missing_ok=True)
-              probe_dir.rmdir()
-
-          n = len(_source_files())
-          print(f"扫描范围：{n} 个文件")
+          from tools.privacy_scan import source_files
+          n = len(source_files())
+          print(f"扫描范围：{n} 个文本文件")
           if n < 20:
               print("::error::扫描范围异常，疑似路径失效")
               sys.exit(1)

@@ -126,3 +126,22 @@ fix(nfo): save() 增加脏标记，避免直接改树时静默跳过写入
 映射引擎 / 整理执行 / 演员补入都直接改 nfo.root，没有标脏，
 于是点「应用」后文件没变且不报错。补 mark_dirty() 并加逐路径用例。
 ```
+
+---
+
+## 改 CI / workflow 之前请先读这段
+
+workflow 的失败方式很难自查，每次都要推上去、等 CI、再回来看：
+**如果 YAML 被 GitHub 拒绝，run 会直接失败、0 个 job、连一行日志都没有，
+Run 标题还会显示文件路径而不是 `name:`。** 这几种写法最容易踩：
+
+| 写法 | 结果 |
+|------|------|
+| `jobs.<id>.env` 里用 `${{ runner.* }}` | `Unrecognized named-value: 'runner'` —— `runner` 只在 step 级可用 |
+| `run: \|` 里嵌**未缩进**的多行 `python -c "..."` | 块标量提前结束，报 `could not find expected ':'` 指向无关行。逻辑请抽成 `scripts/*.py` |
+| `set -e` 下直接写 `git grep ...` | 无命中返回 1 会让 job 失败；写成 `if git grep ...; then ... fi` |
+| 中文正则里数反斜杠层数 | YAML 块标量与 bash 单引号**都不做转义**，多写两个反斜杠就永远不命中。本项目改用 Python 实现扫描，并在 CI 里注入样本自证非空转 |
+| 入口脚本直接 `print("中文")` | GitHub 的 Windows runner 上 stdout 是 cp1252，会 `UnicodeEncodeError`；本机 cp936 复现不出来。用 `core.console.force_utf8_stdout()` |
+
+改完在本地跑一遍对应命令，再参考 [docs/RELEASING.md](docs/RELEASING.md) 的发版流程。
+`tools/dev/ci_local_guard.py` 复刻了隐私守卫那一节的全部逻辑。

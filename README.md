@@ -314,11 +314,15 @@ python scripts/build_release.py --skip-tests   # 跳过测试（不推荐）
 
 ### 发版工作流
 
+完整规定见 **[docs/RELEASING.md](docs/RELEASING.md)**（版本号怎么定、产物放哪、
+每次发版按什么顺序做、CI 踩过的坑）。最短路径：
+
 ```bash
 # 1. 改 version.py 的 __version__ 和 CHANGELOG.md
 # 2. 本地跑一遍 CI 会跑的命令
 ruff check . --select E4,E7,E9,F --ignore E501,E702,E741
 python -m pytest -q
+python tools/dev/ci_local_guard.py
 # 3. 提交并推送，等 CI 绿
 git commit -am "chore(release): v1.3.0"
 git push origin main
@@ -361,11 +365,14 @@ nfo-tag-fixer/
 │   ├── dialogs.py             # 统计分组/规则编辑/二次确认
 │   ├── worker.py              # 后台线程封装（进度/取消/暂停）
 │   └── pages/                 # 六个页面
-├── scripts/build_release.py   # 打包脚本
+├── scripts/
+│   ├── build_release.py       # 打包脚本
+│   └── check_version.py       # 版本号一致性校验（CI 与本地共用）
+├── docs/RELEASING.md          # 发版工作流（版本号规则、目录约定、CI 坑）
 ├── tools/
 │   ├── make_icon.py           # 图标生成（用 Qt 画，不引入额外依赖）
 │   ├── audit/ast_audit.py     # 静态审计：调用但未定义 / 重复定义 / 读未赋值
-│   └── dev/                   # 手动运行的开发辅助脚本
+│   └── dev/                   # 手动运行的开发辅助脚本（截图、CI 守卫、产物验证）
 └── tests/                     # pytest 用例（含 GUI 冒烟与隐私守卫）
 ```
 

@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""本地预演 CI 的隐私守卫与工作区检查。
+"""本地预演 CI：静态检查、workflow 体检、隐私守卫、版本一致、工作区干净。
 
-CI 里那几步是用 Python 写的（不依赖 shell 反斜杠转义），这里在本地跑同一逻辑，
-避免"配了 CI 但从没执行过"。
+"仓库里配了 CI" ≠ "CI 能过"。只要还没推上去，那些 job 就从没执行过 ——
+这个脚本把 CI 里能本地跑的部分全跑一遍，推送前先跑它。
 
 用法：python tools/dev/ci_local_guard.py
 """
@@ -10,7 +10,6 @@ CI 里那几步是用 Python 写的（不依赖 shell 反斜杠转义），这�
 from __future__ import annotations
 
 import pathlib
-import re
 import subprocess
 import sys
 
@@ -29,20 +28,67 @@ def git(*args: str) -> tuple[int, str]:
 
 
 def main() -> int:
-    from tests.test_privacy import _FORBIDDEN, _read, _source_files
+    from tools.privacy_scan import check_runtime_artifacts, scan, self_test
+    from tools.privacy_scan import source_files as _source_files
 
     failures: list[str] = []
 
-    print("[1/4] 运行态数据文件检查")
-    for name in ("settings.json", "rules.json", "archive.db", "config.json"):
-        if (ROOT / name).exists():
-            failures.append(f"仓库根存在 {name}")
-    for name in ("logs", "dist", "build"):
-        if (ROOT / name).exists():
-            failures.append(f"仓库根存在目录 {name}/")
-    print(f"      {'通过' if not failures else '失败'}")
+    # ---------- 1) 静态检查 ----------
+    print("[1/6] ruff 静态检查")
+    r = subprocess.run([sys.executable, "-m", "ruff", "check", ".",
+                        "--output-format=concise"], cwd=ROOT, capture_output=True)
+    if r.returncode not in (0, 1):
+        # 当前解释器里没装 ruff → 退回 PATH 上的 ruff
+        r = subprocess.run(["ruff", "check", ".", "--output-format=concise"],
+                           cwd=ROOT, capture_output=True)
+    out = (r.stdout or b"").decode("utf-8", errors="replace").strip()
+    if r.returncode != 0:
+        failures.append("ruff 未通过:\n" + out[-800:])
+        print("      失败")
+    else:
+        print(f"      {out.splitlines()[-1] if out else '通过'}")
 
-    print("[2/4] git 索引检查")
+    # ---------- 2) workflow 体检 ----------
+    print("[2/6] workflow 体检")
+    r = subprocess.run([sys.executable, str(ROOT / "tools" / "dev" / "lint_workflows.py")],
+                       cwd=ROOT, capture_output=True)
+    out = (r.stdout or b"").decode("utf-8", errors="replace").strip()
+    if r.returncode != 0:
+        failures.append("workflow 体检未通过:\n" + out[-600:])
+        print("      失败")
+    else:
+        print("      通过")
+
+    # ---------- 3) 版本一致 ----------
+    print("[3/6] 版本号一致")
+    r = subprocess.run([sys.executable, str(ROOT / "scripts" / "check_version.py")],
+                       cwd=ROOT, capture_output=True)
+    out = (r.stdout or b"").decode("utf-8", errors="replace").strip()
+    if r.returncode != 0:
+        failures.append("版本号不一致:\n" + out[-400:])
+        print("      失败")
+    else:
+        print("      通过")
+
+    # ---------- 4) 隐私守卫 ----------
+    print("[4/6] 隐私守卫")
+    ok, msg = self_test()
+    print(f"      守卫自检：{'✓' if ok else '✗'} {msg}")
+    if not ok:
+        failures.append("隐私守卫是空转的")
+    violations = scan(ROOT)
+    for v in violations:
+        failures.append(v)
+    print(f"      扫描 {len(_source_files())} 个文件，"
+          f"{'通过' if not violations else f'发现 {len(violations)} 处违规'}")
+    artifacts = check_runtime_artifacts(ROOT)
+    if artifacts:
+        print("      提示：存在运行态产物（本地打包后正常，CI 会判失败）")
+        for a in artifacts:
+            print(f"        · {a}")
+
+    # ---------- 5) git 索引 ----------
+    print("[5/6] git 索引检查")
     rc, out = git("ls-files")
     if rc != 0:
         print("      还不是 git 仓库，跳过")
@@ -55,58 +101,20 @@ def main() -> int:
         print(f"      索引 {len(out.splitlines())} 个文件，"
               f"{'通过' if not bad else '失败'}")
 
-    print("[3/4] 源码隐私扫描")
-    for label, pattern in _FORBIDDEN:
-        rx = re.compile(pattern)
-        hits = []
-        for p in _source_files():
-            for i, line in enumerate(_read(p).splitlines(), 1):
-                m = rx.search(line)
-                if not m:
-                    continue
-                from tests.test_privacy import _ALLOWED_USERNAMES, ALLOWED_HINTS
-                if any(h in line for h in ALLOWED_HINTS):
-                    continue
-                if m.groups() and m.group(1).lower() in _ALLOWED_USERNAMES:
-                    continue
-                hits.append(f"{p.relative_to(ROOT)}:{i}")
-        if hits:
-            failures.append(f"出现「{label}」：{hits[:5]}")
-    print(f"      扫描 {len(_source_files())} 个文件，"
-          f"{'通过' if len(failures) == 0 else '失败'}")
-
-    print("[4/4] 守卫自检（证明扫描不是空转）")
-    # 探针写到仓库**外面**的临时目录：这样它既不可能被本次扫描读到，
-    # 也不可能因为中途异常而遗留在仓库里污染后续检查。
-    import tempfile
-
-    probe_dir = pathlib.Path(tempfile.mkdtemp(prefix="ntf-guard-"))
-    probe = probe_dir / "_guard_probe.py"
-    probe.write_text('x = "C:' + chr(92) + 'Users' + chr(92) + 'realsecretuser"\n',
-                     encoding="utf-8")
-    try:
-        pattern = dict(_FORBIDDEN)["Windows 用户路径"]
-        if not re.search(pattern, _read(probe)):
-            failures.append("隐私守卫是空转的：注入的样本没被匹配")
-            print("      失败")
-        else:
-            print("      注入样本被正确识别，通过")
-    finally:
-        probe.unlink(missing_ok=True)
-        probe_dir.rmdir()
-
-    print("[5/5] 工作区是否干净")
+    # ---------- 6) 工作区 ----------
+    print("[6/6] 工作区是否干净")
     rc, out = git("status", "--porcelain")
     if rc == 0 and out:
-        failures.append("工作区有未提交改动（CI 会判红）：\n" + out[:600])
-    print(f"      {'通过' if not out else '有改动（提交前正常）'}")
+        print(f"      有 {len(out.splitlines())} 项未提交改动（提交前正常，CI 会判红）")
+    else:
+        print("      干净")
 
     if failures:
         print("\n发现问题：")
         for f in failures:
             print(f"  ✗ {f}")
         return 1
-    print("\n全部通过。")
+    print("\n全部通过。可以提交了。")
     return 0
 
 
