@@ -114,3 +114,52 @@ def test_number_from_filename_fallback(tmp_path, stem, expect):
     p.write_text('<?xml version="1.0" encoding="UTF-8"?><movie><title>x</title></movie>',
                  encoding="utf-8")
     assert NfoFile(str(p)).number.lower() == expect.lower()
+
+
+def test_find_video_for_is_deterministic(tmp_path):
+    """同目录多个候选视频时结果必须稳定。
+
+    `os.listdir` 的顺序由文件系统决定，不排序会导致"同一目录重复扫描
+    关联到不同视频" —— 打分与建档都会跟着飘。
+    """
+    from core.scanner import find_video_for
+
+    nfo = tmp_path / "ABC-123.nfo"
+    nfo.write_text("x", encoding="utf-8")
+    for name in ("ABC-123-b.mp4", "ABC-123-a.mp4", "ABC-123-c.mkv"):
+        (tmp_path / name).write_bytes(b"\x00")
+    first = find_video_for(str(nfo))
+    for _ in range(5):
+        assert find_video_for(str(nfo)) == first
+    # 按文件名排序 → 稳定的第一个候选
+    assert os.path.basename(first) == "ABC-123-a.mp4", first
+
+
+@pytest.mark.parametrize("video,expect_match", [
+    ("ABC-123-1080p.mp4", True),      # 主名 + 分隔符后缀（历史缺陷：漏掉）
+    ("ABC-123_U.mp4", True),          # 主名 + 下划线
+    ("ABC-123.1080p.mp4", True),      # 主名 + 点
+    ("ABC-1231080p.mp4", False),      # 主名直接跟数字：与"另一部作品"无法区分，宁可漏认
+    ("ABC-1234.mp4", False),          # 是另一部作品，不是这部
+    ("ABC-999.mp4", False),           # 只共享短前缀，不能乱认亲
+])
+def test_find_video_for_suffix_matching(tmp_path, video, expect_match):
+    """主名 + 分隔符后缀的命名必须能关联上，但不能乱认亲。"""
+    from core.scanner import find_video_for
+
+    nfo = tmp_path / "ABC-123.nfo"
+    nfo.write_text("x", encoding="utf-8")
+    (tmp_path / video).write_bytes(b"\x00")
+    got = find_video_for(str(nfo))
+    assert bool(got) is expect_match, f"{video} → {got!r}"
+
+
+def test_find_video_for_prefers_exact_name(tmp_path):
+    """完全同名的优先级最高（不能因为排序把别的候选提前）。"""
+    from core.scanner import find_video_for
+
+    nfo = tmp_path / "ABC-123.nfo"
+    nfo.write_text("x", encoding="utf-8")
+    (tmp_path / "ABC-123-a.mp4").write_bytes(b"\x00")
+    (tmp_path / "ABC-123.mkv").write_bytes(b"\x00")
+    assert os.path.basename(find_video_for(str(nfo))) == "ABC-123.mkv"

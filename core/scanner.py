@@ -65,22 +65,48 @@ def find_nfo_files(root: str, recursive: bool = True) -> list[str]:
 
 
 def find_video_for(nfo_path: str) -> str:
-    """找与 NFO 同名的视频文件（多扩展名尝试，返回第一个存在的）。"""
-    stem = os.path.splitext(nfo_path)[0]
+    """找与 NFO 关联的视频文件。返回路径或 ""。
+
+    两级判定：
+
+    1. **完全同名**（只有扩展名不同）——绝大多数刮削源的命名方式。
+    2. **以 NFO 主名开头，且后面紧跟分隔符** ——
+       覆盖 `abc-123-1080p.mp4` / `abc-123_U.mp4` / `abc-123.1080p.mp4` 这类
+       "主名 + 分隔符 + 后缀"的命名。
+
+    刻意**不**接受"主名 + 直接跟数字"（`abc-1231080p.mp4`）：那和
+    `abc-1234.mp4`（另一部作品）无法区分。宁可漏认，也不能错认 ——
+    错认会让健康检查误报"视频存在"，并让破解找回拿别的文件大小去打分。
+
+    关于 `os.path.splitext`：历史缺陷是 `base.startswith(stem.split("-")[0])`，
+    而 `stem` 是**完整路径**，于是拿"目录路径 + 文件名前缀"去和一个纯文件名比，
+    永远为假，兜底分支从来没生效过。后果：`abc-123.nfo` 旁边叫
+    `abc-123-1080p.mp4` 的视频关联不上 → 文件大小/修改时间为空、
+    破解找回的"文件大小异常"线索失效、**健康检查误报"孤儿 NFO"**。
+
+    结果按文件名排序，保证同一目录重复扫描得到同一结果。
+    """
+    stem_path = os.path.splitext(nfo_path)[0]
     d = os.path.dirname(nfo_path)
-    for ext in VIDEO_EXTS:
-        cand = stem + ext
+    base_stem = os.path.basename(stem_path)
+
+    for ext in sorted(VIDEO_EXTS):
+        cand = stem_path + ext
         if os.path.isfile(cand):
             return cand
-    # 兜底：同目录下文件名包含番号（stem 中字母数字前缀）的视频
+
+    if not base_stem:
+        return ""
     try:
-        for fn in os.listdir(d):
+        for fn in sorted(os.listdir(d)):
             low = fn.lower()
             if not low.endswith(tuple(VIDEO_EXTS)):
                 continue
             base = os.path.splitext(fn)[0]
-            # 前缀匹配（如 xxx-123.nfo 与 xxx-123-1080p.mp4）
-            if base.startswith(stem.split("-")[0].split("_")[0]) and len(base) > 3:
+            if not base.startswith(base_stem) or len(base) <= len(base_stem):
+                continue
+            rest = base[len(base_stem):]
+            if rest[:1] in ("-", "_", ".", " ", "+"):
                 return os.path.join(d, fn)
     except OSError:
         pass
