@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import shutil
 import subprocess
 import sys
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +54,15 @@ EXCLUDES = [
 
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def _git_out(args: list[str]) -> tuple[int, str]:
+    """跑一条 git 命令取输出（用于生成构建清单）。非 git 仓库时返回 (-1, "")。"""
+    try:
+        r = subprocess.run(["git", *args], cwd=ROOT, capture_output=True)
+    except OSError:
+        return -1, ""
+    return r.returncode, (r.stdout or b"").decode("utf-8", errors="replace")
 
 
 # ---------- 版本 ----------
@@ -241,7 +252,59 @@ def package(exe: Path, ver: str, onefile: bool) -> tuple[Path, Path]:
     sha_path.write_text(f"{digest}  {zip_path.name}\n", encoding="utf-8")
     log(f"  {zip_path.name}  {zip_path.stat().st_size / 1048576:.1f} MB")
     log(f"  SHA256 {digest}")
+    archive_release(ver, zip_path, sha_path, digest)
     return zip_path, sha_path
+
+
+def archive_release(ver: str, zip_path: Path, sha_path: Path, digest: str) -> None:
+    """把发行包归档到 ``release/vX.Y.Z/``，并写一份构建清单。
+
+    为什么需要：`dist/` 每次构建都被整个清掉，CI 上传的 artifact 也有保留期
+    （14 天）会过期。**长期可检索的历史发行包只有两处**：GitHub Release 附件
+    （永久，但在线）和这个本地目录（离线可用）。
+
+    这是"版本隔离到不同文件夹"唯一真正有价值的形式 —— 归档的是**产物**，
+    不是源码。源码靠 git 标签，见 `scripts/versions.py`。
+    """
+    tag = f"v{ver}"
+    out = ROOT / "release" / tag
+    out.mkdir(parents=True, exist_ok=True)
+    for src in (zip_path, sha_path):
+        shutil.copy2(src, out / src.name)
+
+    # 清单：出问题时靠它回溯"这个包是什么时候、从哪个提交构建的"
+    rc, commit = _git_out(["rev-parse", "HEAD"])
+    rc2, branch = _git_out(["rev-parse", "--abbrev-ref", "HEAD"])
+    dirty = bool(_git_out(["status", "--porcelain"])[1].strip())
+    try:
+        import PyInstaller
+        pyinstaller_ver = PyInstaller.__version__
+    except Exception:  # noqa: BLE001
+        pyinstaller_ver = "unknown"
+
+    manifest = {
+        "version": ver,
+        "tag": tag,
+        "built_at": datetime.now().isoformat(timespec="seconds"),
+        "python": sys.version.split()[0],
+        "pyinstaller": pyinstaller_ver,
+        "git_branch": branch.strip() if rc2 == 0 else "",
+        "git_commit": commit.strip() if rc == 0 else "",
+        # 工作区不干净说明这个包不完全等于标签内容，必须留痕
+        "git_dirty": dirty,
+        "asset": zip_path.name,
+        "sha256": digest,
+        "size_bytes": zip_path.stat().st_size,
+    }
+    (out / "build-manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # 回读校验
+    assert (out / zip_path.name).exists(), "归档 zip 未落地"
+    assert json.loads((out / "build-manifest.json").read_text(encoding="utf-8"))["sha256"] == digest
+    log(f"  已归档 → release/{tag}/ （含 build-manifest.json）")
+    if dirty:
+        log("  ⚠ 注意：工作区当时不干净，该包不完全等于标签内容（已写入清单）")
 
 
 def main() -> int:
@@ -275,6 +338,8 @@ def main() -> int:
     log("\n完成。分发这两个文件即可：")
     log(f"  {zip_path}")
     log(f"  {sha_path}")
+    log(f"\n已归档到 release/v{ver}/（含 build-manifest.json，可离线检索历史版本）")
+    log("查看所有版本： python scripts/versions.py list")
     return 0
 
 

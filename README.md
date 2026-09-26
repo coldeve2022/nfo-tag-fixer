@@ -285,6 +285,20 @@ python main.py --version     # 打印版本号
 
 `--doctor` 的输出在被重定向时自动切 UTF-8，直接粘贴到 Issue 不会乱码。
 
+### 版本查阅与回滚
+
+```bash
+python scripts/versions.py list                  # 列出所有版本（日期/提交/归档状态/变更摘要）
+python scripts/versions.py show v1.3.0           # 某版本详情 + 相对上一版改了哪些文件
+python scripts/versions.py diff v1.2.0 v1.3.0 --files
+python scripts/versions.py export v1.2.0         # 把旧版源码导出到 _versions/v1.2.0/
+python scripts/versions.py restore v1.2.0        # 打印各场景的回滚步骤（不自动执行）
+```
+
+**旧版本不需要靠"每个版本复制一份文件夹"来保留** —— git 的每个标签本身就是完整快照。
+需要目录化的只有"发行包"（自动归档到 `release/vX.Y.Z/`）和"要对比的源码快照"
+（按需 `export`）。详见 [docs/RELEASING.md#8-怎么找回旧版本怎么回滚](docs/RELEASING.md)。
+
 ---
 
 ## 打包发布与版本管理
@@ -294,7 +308,9 @@ python scripts/build_release.py                # 完整流程：图标 → 版�
 python scripts/build_release.py --skip-tests   # 跳过测试（不推荐）
 ```
 
-产物在 `dist/`：`nfo-tag-fixer-vX.Y.Z-win64.zip` 与同名 `.sha256`。
+产物在 `dist/`：`nfo-tag-fixer-vX.Y.Z-win64.zip` 与同名 `.sha256`，
+并自动归档到 `release/vX.Y.Z/`（含 `build-manifest.json`：构建时间、Python/PyInstaller
+版本、git 提交、`git_dirty`、SHA256 —— 出问题时能回溯"这个包是哪个提交构建的"）。
 
 推送 `v*` 标签会触发 `.github/workflows/release.yml` 自动构建并创建 Release；
 推送 `main` 会触发 `.github/workflows/tests.yml`（静态检查 + 隐私守卫 + 三平台测试矩阵）。
@@ -309,8 +325,9 @@ python scripts/build_release.py --skip-tests   # 跳过测试（不推荐）
 |------|------|---------|
 | 仓库根 | 源码（唯一真相） | ✅ |
 | `build/` | PyInstaller 中间产物（含生成的版本资源） | ❌ |
-| `dist/` | 打包产物 | ❌ |
-| `release/` | 手工归档的历史发行包 | ❌ |
+| `dist/` | 打包产物（每次构建会被清空） | ❌ |
+| `release/vX.Y.Z/` | **发行包长期归档**（自动写入，可离线检索） | ❌ |
+| `_versions/<tag>/` | 按需导出的旧版源码快照 | ❌ |
 
 ### 发版工作流
 
@@ -366,11 +383,13 @@ nfo-tag-fixer/
 │   ├── worker.py              # 后台线程封装（进度/取消/暂停）
 │   └── pages/                 # 六个页面
 ├── scripts/
-│   ├── build_release.py       # 打包脚本
-│   └── check_version.py       # 版本号一致性校验（CI 与本地共用）
-├── docs/RELEASING.md          # 发版工作流（版本号规则、目录约定、CI 坑）
+│   ├── build_release.py       # 打包脚本（含发行包归档到 release/）
+│   ├── check_version.py       # 版本号一致性校验（CI 与本地共用）
+│   └── versions.py            # 版本查阅 / 导出 / 回滚步骤（旧版本随时可取出）
+├── docs/RELEASING.md          # 发版工作流（版本号规则、目录约定、找回旧版本、CI 坑）
 ├── tools/
 │   ├── make_icon.py           # 图标生成（用 Qt 画，不引入额外依赖）
+│   ├── privacy_scan.py        # 隐私扫描（零依赖，CI 与测试共用）
 │   ├── audit/ast_audit.py     # 静态审计：调用但未定义 / 重复定义 / 读未赋值
 │   └── dev/                   # 手动运行的开发辅助脚本（截图、CI 守卫、产物验证）
 └── tests/                     # pytest 用例（含 GUI 冒烟与隐私守卫）

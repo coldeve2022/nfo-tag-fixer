@@ -214,3 +214,99 @@ env -u HTTPS_PROXY -u HTTP_PROXY git -c http.proxy=http://127.0.0.1:7897 ls-remo
   （发布说明由 `release.yml` 从 `CHANGELOG.md` 自动抽取）
 - 面向开发：`CHANGELOG.md`（记录**改了什么以及为什么**）
 - 面向排查：`git log`（提交信息写清"改了什么 + 为什么"）
+
+---
+
+## 8. 怎么找回旧版本、怎么回滚
+
+**先纠正一个常见误解：旧版本不需要靠"每个版本复制一份文件夹"来保留。**
+git 的每个提交、每个标签本身就是一份完整快照，随时可取出、可对比、可回滚。
+"v1.0 / v1.0_new / v1.0_final / v1.0_备份" 这种目录式版本管理有三个硬伤：
+
+1. **磁盘膨胀且无法合并** —— 改了一处要同步 N 份，很快就不知道哪份是对的；
+2. **看不出差异** —— 想知道"这两个版本差在哪"只能靠人肉比对；
+3. **容易改错副本** —— 在旧目录里改了 bug，却发的是新目录。
+
+真正需要"目录化"的只有两样：**发行包**和**需要对比的源码快照**。前者自动归档，
+后者按需导出。
+
+### 8.1 代码：一切都还在，三条命令取出来
+
+```bash
+python scripts/versions.py list                 # 列出所有版本（日期/提交/归档状态/变更摘要）
+python scripts/versions.py list --remote        # 先从远端同步标签再列
+python scripts/versions.py show v1.3.0          # 某版本的详情 + 相对上一版改了哪些文件
+python scripts/versions.py diff v1.2.0 v1.3.0 --files   # 两版本的逐文件差异
+python scripts/versions.py export v1.2.0        # 把该版本源码导出到 _versions/v1.2.0/
+```
+
+`export` 是**只读快照**（不含 `.git`，不能在里面提交），适合"开两个目录对着看"或
+拿来排查。默认导出到仓库内的 `_versions/<tag>/`（已 gitignore）。
+
+### 8.2 回滚：按场景选，不要一律 `git reset --hard`
+
+```bash
+python scripts/versions.py restore v1.2.0       # 打印各场景的具体步骤，不替你执行
+```
+
+| 场景 | 做法 | 风险 |
+|------|------|------|
+| 只想**看一眼**旧版代码 | `versions.py export v1.2.0` | 无 |
+| 把**工作区**切回旧版临时排查 | `git switch --detach v1.2.0` → 排查完 `git switch main` | 中（会换掉工作区文件，先确认没有未提交改动） |
+| 基于旧版**修 bug** | `git switch -c hotfix/v1.3.1 v1.2.0`，改完发 `v1.3.1` | 低（在分支上，不影响 main） |
+| 用户手里的 **exe** 回旧版 | 从 Release 下载旧 zip，解压到**另一个目录** | 无（数据目录不受影响） |
+| 彻底放弃某次提交 | `git revert <commit>`（**保留历史**） | 低 |
+| 重写历史 | `git reset --hard` + 强推 | **高，公开发布过的仓库不要做** |
+
+> 已经发布过的提交不要用 `reset` 抹掉：别人可能已经 clone 或下载了。
+> 用 `revert` 产生一个"反向提交"，历史保持线性可追溯。
+
+### 8.3 发行包（exe）：两个长期归档点
+
+这是**唯一值得"放成不同文件夹"的东西**：
+
+| 归档点 | 性质 | 位置 |
+|--------|------|------|
+| GitHub Release 附件 | 永久、在线、可分享 | 每个标签自动创建 |
+| 本地 `release/vX.Y.Z/` | 离线可用 | `build_release.py` 每次构建自动写入 |
+
+`release/vX.Y.Z/` 里除了 zip 与 `.sha256`，还有一份 `build-manifest.json`：
+
+```json
+{
+  "version": "1.3.0", "tag": "v1.3.0",
+  "built_at": "2026-09-26T02:27:11",
+  "python": "3.13.14", "pyinstaller": "6.16.0",
+  "git_branch": "main", "git_commit": "<40 位提交>",
+  "git_dirty": false,
+  "asset": "nfo-tag-fixer-v1.3.0-win64.zip",
+  "sha256": "...", "size_bytes": 52894815
+}
+```
+
+`git_commit` 与 `git_dirty` 是关键：出问题时能回答**"用户手上这个包到底是哪个提交构建的、
+构建时工作区干不干净"**。工作区不干净会打印警告 —— 那种包不完全等于标签内容。
+
+> ⚠️ **CI 上传的 artifact 有保留期（本仓库设的是 14 天）会过期**。
+> 长期归档只能靠 Release 附件和本地 `release/`，别指望 CI artifact。
+
+### 8.4 数据与代码是解耦的（升级/回滚都不丢）
+
+`settings.json`、`rules.json`、`archive.db`、`logs/` 都在**数据目录**里，
+不在程序目录。所以：
+
+- 换版本（升级或回滚）**不会**动你的配置与档案；
+- 解压新版 exe 到另一个目录，新旧两份可以并存、随时切换；
+- 回滚旧版 exe 后，配置仍然是你最新改过的那些。
+
+**唯一的兼容性注意点**：`Settings.from_dict()` 是"未知字段忽略、缺失字段用默认值"。
+所以把**新版**的 `settings.json` 喂给**旧版**程序时，旧版不认识的新字段会在它下次
+保存时被丢掉。回滚到旧版前，建议先备份一份数据目录：
+
+```bash
+# 数据目录位置用 --doctor 查；找不到就用 %APPDATA%\nfo-tag-fixer
+python main.py --doctor
+```
+
+如果将来改动数据格式，发版说明里要**显式标注**，并考虑把 `archive.db` 的
+schema 版本号写进库内（目前表结构只在 `core/archive.py` 的 `SCHEMA` 里）。
